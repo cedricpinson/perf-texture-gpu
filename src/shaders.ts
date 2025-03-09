@@ -20,5 +20,5 @@ void main() {
     float scrollOffset = float(u_frame)/1024.0;
     scrolledCoord.y = scrolledCoord.y + scrollOffset; // Smooth vertical scrolling with wrap-around using GLSL mod function
 
-    outColor = texture(u_texture, scrolledCoord);//, lod);
+    outColor = texture(u_texture, scrolledCoord);
 }`;

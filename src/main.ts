@@ -10,6 +10,7 @@ const PARAMS = {
     textureSize: 1024,
     uploadFrequency: 10,
     running: true,
+    textureSizes: [64, 128, 256, 512, 1024, 2048, 4096, 8192],
 };
 
 const controlsContainer = document.getElementById('controls');
@@ -22,13 +23,14 @@ const pane = new Pane({
 });
 
 pane.addBinding(PARAMS, 'textureSize', {
-    min: 64,
-    max: 8192,
-    step: 64,
+    options: PARAMS.textureSizes.reduce((obj, size) => {
+        obj[`${size}x${size}`] = size;
+        return obj;
+    }, {} as Record<string, number>)
 });
 pane.addBinding(PARAMS, 'uploadFrequency', {
     min: 1,
-    max: 120,
+    max: 20,
     step: 1,
 });
 pane.addBinding(PARAMS, 'running');
@@ -72,8 +74,7 @@ const performanceMonitor = new PerformanceMonitor();
 const textureUploader = new TextureUploader(gl);
 const renderer = new Renderer(gl, program, positions, texcoords, texture);
 
-let lastDisplayUpdate = 0;
-function render(time: number) {
+function render() {
     if (!PARAMS.running) {
         requestAnimationFrame(render);
         return;
@@ -81,23 +82,36 @@ function render(time: number) {
 
     performanceMonitor.beginFrame();
 
-    // Upload texture based on frequency
-    const startTime = performance.now();
+    // Check results from previous frames
+    textureUploader.checkQueryResults((timeMs, _frameId) => {
+        performanceMonitor.addMeasurement(timeMs);
+    });
+
+
+    // Start new measurement if query extension is available
+    const canMeasure = textureUploader.beginMeasure();
+
+    // Upload textures
     for (let i = 0; i < PARAMS.uploadFrequency; i++) {
         textureUploader.uploadTexture(PARAMS.textureSize);
     }
-    const endTime = performance.now();
-    performanceMonitor.recordUploadTime(startTime, endTime);
 
-    // update display every second
-    if (Math.floor(performance.now() / 1000) > Math.floor(lastDisplayUpdate / 1000)) {
-        performanceMonitor.updateDisplay(PARAMS.uploadFrequency, PARAMS.textureSize);
-        lastDisplayUpdate = performance.now();
-    }
 
+    textureUploader.nextFrame();
     renderer.render();
 
+    if (canMeasure) {
+        textureUploader.endMeasure();
+    }
+
     performanceMonitor.endFrame();
+
+    // Update display once per second
+    if (performanceMonitor.shouldUpdateDisplay()) {
+        performanceMonitor.updateDisplay(PARAMS.uploadFrequency, PARAMS.textureSize);
+    }
+
+
     requestAnimationFrame(render);
 }
 
