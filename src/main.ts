@@ -1,15 +1,20 @@
 import { Pane } from 'tweakpane';
 import { createShader, createProgram, createTexture } from './webgl';
-import { vertexShaderSource, fragmentShaderSource } from './shaders';
+import { vertexShaderSource, fragmentShaderSourceScrollNoTexture, fragmentShaderSourceScrollTexture, funFragmentShaderSource, heavyFragmentShaderSourceWarped } from './shaders';
 import { PerformanceMonitor } from './performance';
 import { TextureUploader } from './texture-uploader';
 import { Renderer } from './renderer';
+
+
 
 // UI Controls
 const PARAMS = {
     textureSize: 1024,
     uploadFrequency: 10,
+    uploadBackgroundTexture: false,
+    program: 0,
     running: true,
+    useMipmaps: true,
     textureSizes: [64, 128, 256, 512, 1024, 2048, 4096, 8192],
 };
 
@@ -29,16 +34,22 @@ pane.addBinding(PARAMS, 'textureSize', {
     }, {} as Record<string, number>)
 });
 pane.addBinding(PARAMS, 'uploadFrequency', {
-    min: 1,
+    min: 0,
     max: 20,
     step: 1,
 });
+pane.addBinding(PARAMS, 'useMipmaps');
+pane.addBinding(PARAMS, 'uploadBackgroundTexture');
 pane.addBinding(PARAMS, 'running');
-
 // WebGL setup
 const canvas = document.createElement('canvas');
-canvas.width = 800;
-canvas.height = 600;
+const desiredWidth = 800;
+const desiredHeight = 600;
+const devicePixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+canvas.width = desiredWidth * devicePixelRatio;
+canvas.height = desiredHeight * devicePixelRatio;
+canvas.style.width = `${desiredWidth}px`;
+canvas.style.height = `${desiredHeight}px`;
 document.body.appendChild(canvas);
 
 const gl = canvas.getContext('webgl2', { performance: 'high-performance' }) as WebGL2RenderingContext;
@@ -48,11 +59,50 @@ if (!gl) {
 
 // Create shaders and program
 const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
-const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
-const program = createProgram(gl, vertexShader, fragmentShader);
+
+const fragmentShaderScrollTexture = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSourceScrollTexture);
+const fragmentShaderScrollNoTexture = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSourceScrollNoTexture);
+const fragmentShaderFun = createShader(gl, gl.FRAGMENT_SHADER, funFragmentShaderSource);
+const fragmentShaderHeavy = createShader(gl, gl.FRAGMENT_SHADER, heavyFragmentShaderSourceWarped);
+
+const programScrollTexture = createProgram(gl, vertexShader, fragmentShaderScrollTexture);
+const programScrollNoTexture = createProgram(gl, vertexShader, fragmentShaderScrollNoTexture);
+const programFun = createProgram(gl, vertexShader, fragmentShaderFun);
+const programHeavy = createProgram(gl, vertexShader, fragmentShaderHeavy);
+
+const programs = [
+    {
+        program: programScrollTexture,
+        name: 'Scroll Texture',
+        index: 0
+    },
+    {
+        program: programScrollNoTexture,
+        name: 'Scroll No Texture',
+        index: 1
+    },
+    {
+        program: programFun,
+        name: 'Fun',
+        index: 2
+    },
+    {
+        program: programHeavy,
+        name: 'Heavy',
+        index: 3
+    }
+];
+
+pane.addBinding(PARAMS, 'program', {
+    options: programs.reduce((obj, prg) => {
+        obj[prg.name] = prg.index;
+        return obj;
+    }, {} as Record<string, number>)
+});
 
 // Create texture
-const texture = createTexture(gl);
+let texture = { texture: createTexture(gl), size: 0 };
+let backgroundTexture = { texture: createTexture(gl), size: 0 };
 
 // Create geometry data
 const positions = new Float32Array([
@@ -69,10 +119,15 @@ const texcoords = new Float32Array([
     1, 1,
 ]);
 
+
 // Initialize components
-const performanceMonitor = new PerformanceMonitor();
+const performanceMonitor = new PerformanceMonitor(gl);
 const textureUploader = new TextureUploader(gl);
-const renderer = new Renderer(gl, program, positions, texcoords, texture);
+const renderer = new Renderer(gl, programs.map((program) => program.program), positions, texcoords);
+
+// initialize textures
+texture = textureUploader.uploadTexture(texture, PARAMS.textureSize, PARAMS.useMipmaps);
+backgroundTexture = textureUploader.uploadTexture(backgroundTexture, PARAMS.textureSize, PARAMS.useMipmaps);
 
 function render() {
     if (!PARAMS.running) {
@@ -80,37 +135,31 @@ function render() {
         return;
     }
 
+    performanceMonitor.checkQueryResults();
+
     performanceMonitor.beginFrame();
 
-    // Check results from previous frames
-    textureUploader.checkQueryResults((timeMs, _frameId) => {
-        performanceMonitor.addMeasurement(timeMs);
-    });
-
-
-    // Start new measurement if query extension is available
-    const canMeasure = textureUploader.beginMeasure();
-
+    const canMeasure = performanceMonitor.beginMeasure();
     // Upload textures
     for (let i = 0; i < PARAMS.uploadFrequency; i++) {
-        textureUploader.uploadTexture(PARAMS.textureSize);
+        if (PARAMS.uploadBackgroundTexture) {
+            backgroundTexture = textureUploader.uploadTexture(backgroundTexture, PARAMS.textureSize, PARAMS.useMipmaps);
+        } else {
+            texture = textureUploader.uploadTexture(texture, PARAMS.textureSize, PARAMS.useMipmaps);
+        }
     }
-
-
-    textureUploader.nextFrame();
-    renderer.render();
-
     if (canMeasure) {
-        textureUploader.endMeasure();
+        performanceMonitor.endMeasure();
     }
 
-    performanceMonitor.endFrame();
+    //renderer.render(PARAMS.heavyFragmentShader, texture);
+    renderer.render(PARAMS.program, texture);
 
-    // Update display once per second
     if (performanceMonitor.shouldUpdateDisplay()) {
         performanceMonitor.updateDisplay(PARAMS.uploadFrequency, PARAMS.textureSize);
     }
 
+    performanceMonitor.endFrame();
 
     requestAnimationFrame(render);
 }

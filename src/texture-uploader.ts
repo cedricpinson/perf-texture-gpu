@@ -1,36 +1,10 @@
-interface QueryInfo {
-    query: WebGLQuery;
-    active: boolean;
-    frameId: number;
-}
+import { createTexture } from './webgl';
 
 export class TextureUploader {
-    data: Uint8Array | null;
-    size = 0;
-    timerQueryExt: any;
-    queryPool: QueryInfo[] = [];
-    currentFrame: number = 0;
-    readonly POOL_SIZE = 4; // Adjust size based on your needs
+    private data: Uint8Array | null;
 
     constructor(private gl: WebGL2RenderingContext) {
         this.data = null;
-        this.size = 0;
-        // Initialize timer query extension
-        this.timerQueryExt = this.gl.getExtension('EXT_disjoint_timer_query_webgl2');
-        if (!this.timerQueryExt) {
-            console.warn('EXT_disjoint_timer_query_webgl2 extension not available');
-            return;
-        }
-
-        // Initialize query pool
-        for (let i = 0; i < this.POOL_SIZE; i++) {
-            const query = this.gl.createQuery()!;
-            this.queryPool.push({
-                query,
-                active: false,
-                frameId: -1
-            });
-        }
     }
 
     generateTextureData(size: number): Uint8Array {
@@ -44,84 +18,33 @@ export class TextureUploader {
         return data;
     }
 
-    uploadTexture(size: number): void {
-        if (this.size !== size) {
-            this.size = size;
+    uploadTexture(textureObject: { texture: WebGLTexture, size: number }, size: number, useMipmaps: boolean = true): { texture: WebGLTexture, size: number } {
+        let textureToUse = textureObject;
+        if (textureObject.size !== size) {
+            textureObject.size = size;
             this.data = this.generateTextureData(size);
+            console.log('generating new texture', size);
+            this.gl.deleteTexture(textureToUse.texture);
+            textureToUse = { texture: createTexture(this.gl), size };
         }
+        this.gl.bindTexture(this.gl.TEXTURE_2D, textureToUse.texture);
+
         const textureData = this.data;
         this.gl.texImage2D(
             this.gl.TEXTURE_2D,
             0,
             this.gl.RGBA,
-            this.size,
-            this.size,
+            size,
+            size,
             0,
             this.gl.RGBA,
             this.gl.UNSIGNED_BYTE,
             textureData
         );
-        this.gl.generateMipmap(this.gl.TEXTURE_2D);
-    }
 
-    beginMeasure(): boolean {
-        if (!this.timerQueryExt) return false;
-
-        // Find an inactive query in the pool
-        const queryInfo = this.queryPool.find(q => !q.active);
-        if (!queryInfo) {
-            console.warn('No available queries in pool');
-            return false;
+        if (useMipmaps) {
+            this.gl.generateMipmap(this.gl.TEXTURE_2D);
         }
-
-        this.gl.beginQuery(this.timerQueryExt.TIME_ELAPSED_EXT, queryInfo.query);
-        queryInfo.active = true;
-        queryInfo.frameId = this.currentFrame;
-        return true;
-    }
-
-    endMeasure(): void {
-        if (!this.timerQueryExt) return;
-        this.gl.endQuery(this.timerQueryExt.TIME_ELAPSED_EXT);
-    }
-
-    checkQueryResults(resultReady: (timeMs: number, frameId: number) => void): void {
-        if (!this.timerQueryExt) return;
-        this.gl.flush();
-
-        // Check all active queries
-        for (const queryInfo of this.queryPool) {
-            if (!queryInfo.active) continue;
-
-            const available = this.gl.getQueryParameter(
-                queryInfo.query,
-                this.gl.QUERY_RESULT_AVAILABLE
-            );
-            const disjoint = this.gl.getParameter(this.timerQueryExt.GPU_DISJOINT_EXT);
-
-            if (available && !disjoint) {
-                const timeElapsed = this.gl.getQueryParameter(
-                    queryInfo.query,
-                    this.gl.QUERY_RESULT
-                );
-                const milliseconds = timeElapsed / 1000000;
-                resultReady(milliseconds, queryInfo.frameId);
-
-                // Mark query as available for reuse
-                queryInfo.active = false;
-            }
-        }
-    }
-
-    nextFrame(): void {
-        this.currentFrame++;
-    }
-
-    cleanup(): void {
-        // Clean up queries when done
-        for (const queryInfo of this.queryPool) {
-            this.gl.deleteQuery(queryInfo.query);
-        }
-        this.queryPool = [];
+        return textureToUse;
     }
 }
