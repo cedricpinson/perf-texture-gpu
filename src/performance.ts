@@ -3,13 +3,24 @@ import Stats from 'stats.js';
 interface QueryInfo {
     query: WebGLQuery;
     active: boolean;
+    name: string;
     frameId: number;
+}
+
+interface TimingResult {
+    name: string;
+    startTime: number;
+    endTime: number;
+}
+
+interface NamedMeasurements {
+    [key: string]: number[]; // Just store the array of measurements
 }
 
 export class PerformanceMonitor {
     stats: Stats;
     performanceDiv: HTMLDivElement;
-    measurementTimes: number[] = [];
+    measurementTimes: NamedMeasurements = {};
     readonly MEASUREMENT_BUFFER_SIZE = 100;
     lastDisplayUpdate = 0;
     readonly displayUpdateInterval = 1000; // 1 second
@@ -18,12 +29,16 @@ export class PerformanceMonitor {
     private timerQueryExt: any;
     private queryPool: QueryInfo[] = [];
     private frameCount: number = 0;
-    private readonly POOL_SIZE = 8;
+    private readonly POOL_SIZE = 16;
 
-    constructor(private gl: WebGL2RenderingContext) {
-        // Stats initialization
+    currentFrameTimings: TimingResult[] = [];
+
+    activeQuery: QueryInfo | null = null;
+    gl: WebGL2RenderingContext;
+
+    constructor(gl: WebGL2RenderingContext) {
+        this.gl = gl;
         this.stats = new Stats();
-        this.measurementTimes = new Array(this.MEASUREMENT_BUFFER_SIZE).fill(0.0);
 
         const statsContainer = document.getElementById('stats');
         if (!statsContainer) {
@@ -38,43 +53,74 @@ export class PerformanceMonitor {
             throw new Error('Element with id "log" not found');
         }
 
-        // Query initialization
         this.timerQueryExt = this.gl.getExtension('EXT_disjoint_timer_query_webgl2')!;
         if (!this.timerQueryExt) {
             console.warn('EXT_disjoint_timer_query_webgl2 extension not available');
             return;
         }
 
-        // Initialize query pool
         for (let i = 0; i < this.POOL_SIZE; i++) {
             const query = this.gl.createQuery()!;
             this.queryPool.push({
                 query,
                 active: false,
+                name: '',
                 frameId: -1
             });
         }
     }
 
-    beginMeasure(): boolean {
-        if (!this.timerQueryExt) return false;
-
-        // Find an inactive query in the pool
-        const queryInfo = this.queryPool.find(q => !q.active);
-        if (!queryInfo) {
-            console.warn('No available queries in pool');
-            return false;
+    getQueryFromPool(): QueryInfo | null {
+        const query = this.queryPool.find(q => !q.active);
+        if (query) {
+            query.active = true;
+            query.frameId = this.frameCount;
         }
-
-        this.gl.beginQuery(this.timerQueryExt.TIME_ELAPSED_EXT, queryInfo.query);
-        queryInfo.active = true;
-        queryInfo.frameId = this.frameCount;
-        return true;
+        return query || null;
     }
 
-    endMeasure(): void {
+    beginFrame(): void {
+        this.stats.begin();
+        this.currentFrameTimings = [];
+
+        // Start first query without a name
+        const newQuery = this.getQueryFromPool();
+        if (newQuery) {
+            this.gl.beginQuery(this.timerQueryExt.TIME_ELAPSED_EXT, newQuery.query);
+            this.activeQuery = newQuery;
+        }
+    }
+
+    saveMeasure(name: string): void {
         if (!this.timerQueryExt) return;
-        this.gl.endQuery(this.timerQueryExt.TIME_ELAPSED_EXT);
+
+        // Name the previous query if it exists
+        if (this.activeQuery) {
+            this.activeQuery.name = name;
+            this.gl.endQuery(this.timerQueryExt.TIME_ELAPSED_EXT);
+        }
+
+        // Start new query (without name yet)
+        const newQuery = this.getQueryFromPool();
+        if (!newQuery) {
+            console.warn('No available queries in pool');
+            return;
+        }
+
+        this.gl.beginQuery(this.timerQueryExt.TIME_ELAPSED_EXT, newQuery.query);
+        this.activeQuery = newQuery;
+    }
+
+    endFrame(): void {
+        // End and name the last measurement as 'frameEnd'
+        if (this.activeQuery) {
+            this.activeQuery.name = 'frameEnd';
+            this.gl.endQuery(this.timerQueryExt.TIME_ELAPSED_EXT);
+            this.activeQuery = null;
+        }
+
+        this.frameCount++;
+        this.stats.end();
     }
 
     checkQueryResults(): void {
@@ -97,7 +143,7 @@ export class PerformanceMonitor {
                     this.gl.QUERY_RESULT
                 );
                 const milliseconds = timeElapsed / 1000000;
-                this.addMeasurement(milliseconds);
+                this.addMeasurement(queryInfo.name, milliseconds);
 
                 // Mark query as available for reuse
                 queryInfo.active = false;
@@ -105,18 +151,14 @@ export class PerformanceMonitor {
         }
     }
 
-    beginFrame() {
-        this.stats.begin();
-    }
+    private addMeasurement(name: string, timeMs: number) {
+        // Initialize array for this name if it doesn't exist
+        if (!this.measurementTimes[name]) {
+            this.measurementTimes[name] = new Array(this.MEASUREMENT_BUFFER_SIZE).fill(0);
+        }
 
-    endFrame() {
-        this.frameCount++;
-        this.stats.end();
-    }
-
-    private addMeasurement(timeMs: number) {
         const index = this.frameCount % this.MEASUREMENT_BUFFER_SIZE;
-        this.measurementTimes[index] = timeMs;
+        this.measurementTimes[name][index] = timeMs;
     }
 
     shouldUpdateDisplay(): boolean {
@@ -124,16 +166,19 @@ export class PerformanceMonitor {
     }
 
     updateDisplay(uploadFrequency: number, textureSize: number) {
-        const avgTime = this.measurementTimes.length > 0
-            ? this.measurementTimes.reduce((a, b) => a + b, 0) / this.measurementTimes.length
-            : 0;
+        // Calculate averages for each named measurement
+        const averages = Object.entries(this.measurementTimes).map(([name, times]) => {
+            const sum = times.reduce((a, b) => a + b, 0);
+            const avg = sum / this.MEASUREMENT_BUFFER_SIZE;
+            return `${name}: ${avg.toFixed(2)}ms`;
+        });
 
         const uploadSize = textureSize * textureSize * 4;
         const uploadRate = (uploadFrequency * uploadSize);
 
         this.performanceDiv.innerHTML = [
             `Texture Size: ${textureSize}x${textureSize}`,
-            `Avg Upload Time: ${avgTime.toFixed(2)}ms`,
+            ...averages,
             `Frame Count: ${this.frameCount}`,
             `Upload Rate: ${(uploadRate / 1024 / 1024).toFixed(2)} MB/Frame`
         ].join('<br>');

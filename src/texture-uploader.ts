@@ -1,10 +1,10 @@
-import { createTexture } from './webgl';
+import { createTexture2D, Texture } from './webgl';
 
 export class TextureUploader {
     private data: Uint8Array | null;
 
-    constructor(private gl: WebGL2RenderingContext) {
-        this.data = null;
+    constructor(private gl: WebGL2RenderingContext, size: number) {
+        this.data = this.generateTextureData(size);
     }
 
     generateTextureData(size: number): Uint8Array {
@@ -18,25 +18,25 @@ export class TextureUploader {
         return data;
     }
 
-    uploadTexture(textureObject: { texture: WebGLTexture, size: number }, size: number, useMipmaps: boolean = true): { texture: WebGLTexture, size: number } {
+    uploadTexture(textureObject: Texture, size: number, useMipmaps: boolean = true): Texture {
         let textureToUse = textureObject;
-        if (textureObject.size !== size) {
-            textureObject.size = size;
+        if (textureObject.size !== size || textureObject.mipmap !== useMipmaps) {
             this.data = this.generateTextureData(size);
             console.log('generating new texture', size);
             this.gl.deleteTexture(textureToUse.texture);
-            textureToUse = { texture: createTexture(this.gl), size };
+            textureToUse = createTexture2D(this.gl, size, useMipmaps);
+        } else {
+            this.gl.bindTexture(this.gl.TEXTURE_2D, textureToUse.texture);
         }
-        this.gl.bindTexture(this.gl.TEXTURE_2D, textureToUse.texture);
 
         const textureData = this.data;
-        this.gl.texImage2D(
+        this.gl.texSubImage2D(
             this.gl.TEXTURE_2D,
             0,
-            this.gl.RGBA,
-            size,
-            size,
             0,
+            0,
+            size,
+            size,
             this.gl.RGBA,
             this.gl.UNSIGNED_BYTE,
             textureData
@@ -45,6 +45,7 @@ export class TextureUploader {
         if (useMipmaps) {
             this.gl.generateMipmap(this.gl.TEXTURE_2D);
         }
+
         return textureToUse;
     }
 }

@@ -1,3 +1,9 @@
+export interface Texture {
+    texture: WebGLTexture
+    size: number
+    mipmap: boolean
+}
+
 export function createShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
     const shader = gl.createShader(type);
     if (!shader) {
@@ -49,18 +55,30 @@ export function createBuffer(gl: WebGL2RenderingContext, data: Float32Array): We
     return buffer;
 }
 
-export function createTexture(gl: WebGL2RenderingContext): WebGLTexture {
+export function createTexture2D(gl: WebGL2RenderingContext, size: number, useMipmaps: boolean): Texture {
+
     const texture = gl.createTexture();
     if (!texture) {
         throw new Error('Failed to create texture');
     }
-
-    gl.activeTexture(gl.TEXTURE0);  // Specify texture unit 0
+    let levels = 1;
+    if (useMipmaps) {
+        levels = Math.log2(size);
+    }
     gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texStorage2D(
+        gl.TEXTURE_2D,
+        levels,
+        gl.RGBA8,
+        size, size);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    if (useMipmaps) {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    } else {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-    return texture;
+    return { texture, size, mipmap: useMipmaps };
 }
